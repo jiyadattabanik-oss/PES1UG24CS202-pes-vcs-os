@@ -129,6 +129,17 @@ int tree_serialize(const Tree *tree, void **data_out, size_t *len_out) {
 //   - object_write    : save that binary buffer to the store as OBJ_TREE
 //
 // Returns 0 on success, -1 on error.
+// ─── IMPLEMENTED ─────────────────────────────────────────────────────────────
+
+// Recursive helper: builds one level of the tree from a slice of index entries.
+//
+// entries  - array of index entries
+// count    - number of entries in this slice
+// prefix   - the directory prefix this level is responsible for (e.g., "src/")
+//            empty string ("") for the root level
+// id_out   - receives the ObjectID of the written tree object
+//
+// All paths in `entries` at this call must already have `prefix` stripped off.
 static int write_tree_level(IndexEntry *entries, int count,
                             const char *prefix, ObjectID *id_out) {
     Tree tree;
@@ -200,4 +211,35 @@ static int write_tree_level(IndexEntry *entries, int count,
 // Comparison function for sorting index entries by path (for tree building)
 static int compare_index_by_path(const void *a, const void *b) {
     return strcmp(((const IndexEntry *)a)->path, ((const IndexEntry *)b)->path);
+}
+
+// Build a tree hierarchy from the current index and write all tree
+// objects to the object store.
+//
+// Returns 0 on success, -1 on error.
+int tree_from_index(ObjectID *id_out) {
+    // Read .pes/index directly so tree.o has no dependency on index.o
+    // (test_tree doesn't link index.o per the provided Makefile)
+    FILE *f = fopen(INDEX_FILE, "r");
+    if (!f) return -1;
+
+    IndexEntry entries[MAX_INDEX_ENTRIES];
+    int count = 0;
+
+    while (count < MAX_INDEX_ENTRIES) {
+        IndexEntry *e = &entries[count];
+        char hex[HASH_HEX_SIZE + 1];
+        unsigned long long mtime;
+        unsigned int size;
+        int n = fscanf(f, "%o %64s %llu %u %511s\n",
+                       &e->mode, hex, &mtime, &size, e->path);
+        if (n != 5) break;
+        if (hex_to_hash(hex, &e->hash) != 0) break;
+        e->mtime_sec = (uint64_t)mtime;
+        e->size      = (uint32_t)size;
+        count++;
+    }
+    fclose(f);
+
+    return write_tree_level(entries, count, "", id_out);
 }
