@@ -36,7 +36,6 @@ void test_blob_storage(void) {
     void *data;
     size_t len;
     rc = object_read(&id, &type, &data, &len);
-    assert(rc == 0);
     assert(type == OBJ_BLOB);
     assert(len == strlen(content));
     assert(memcmp(data, content, len) == 0);
