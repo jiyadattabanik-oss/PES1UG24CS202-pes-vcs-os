@@ -135,11 +135,66 @@ int index_status(const Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_load(Index *index) {
-    // TODO: Implement index loading
-    // (See Lab Appendix for logical steps)
-    (void)index;
-    return -1;
+    index->count = 0;
+
+    FILE *f = fopen(INDEX_FILE, "r");
+    if (!f) {
+        // Not an error — just means nothing is staged yet
+        return 0;
+    }
+
+    char line[1024];
+    while (fgets(line, sizeof(line), f)) {
+        // Strip trailing newline
+        line[strcspn(line, "\r\n")] = '\0';
+        if (line[0] == '\0') continue; // skip blank lines
+
+        if (index->count >= MAX_INDEX_ENTRIES) {
+            fprintf(stderr, "error: index full\n");
+            fclose(f);
+            return -1;
+        }
+
+        IndexEntry *entry = &index->entries[index->count];
+
+        char hex[HASH_HEX_SIZE + 1];
+        unsigned int mode;
+        unsigned long long mtime;
+        unsigned int size;
+        char path[512];
+
+        // Format: <mode-octal> <hex-hash> <mtime> <size> <path>
+        if (sscanf(line, "%o %64s %llu %u %511s",
+                   &mode, hex, &mtime, &size, path) != 5) {
+            fprintf(stderr, "error: malformed index line: %s\n", line);
+            fclose(f);
+            return -1;
+        }
+
+        entry->mode     = (uint32_t)mode;
+        entry->mtime_sec = (uint64_t)mtime;
+        entry->size     = (uint32_t)size;
+        strncpy(entry->path, path, sizeof(entry->path) - 1);
+        entry->path[sizeof(entry->path) - 1] = '\0';
+
+        if (hex_to_hash(hex, &entry->hash) != 0) {
+            fprintf(stderr, "error: bad hash in index: %s\n", hex);
+            fclose(f);
+            return -1;
+        }
+
+        index->count++;
+    }
+
+    fclose(f);
+    return 0;
 }
+
+// Comparison function for sorting index entries by path
+static int compare_index_entries(const void *a, const void *b) {
+    return strcmp(((const IndexEntry *)a)->path, ((const IndexEntry *)b)->path);
+}
+
 
 // Save the index to .pes/index atomically.
 //
