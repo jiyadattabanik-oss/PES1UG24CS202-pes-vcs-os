@@ -94,82 +94,96 @@ int object_exists(const ObjectID *id) {
 //
 // Returns 0 on success, -1 on error.
 int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out) {
-    printf("object_write called\n");
-    char header[64];
+    // 1. Build the header string: "blob 42\0", "tree 42\0", or "commit 42\0"
     const char *type_str;
+    switch (type) {
+        case OBJ_BLOB:   type_str = "blob";   break;
+        case OBJ_TREE:   type_str = "tree";   break;
+        case OBJ_COMMIT: type_str = "commit"; break;
+        default: return -1;
+    }
 
-    if (type == OBJ_BLOB) type_str = "blob";
-    else if (type == OBJ_TREE) type_str = "tree";
-    else if (type == OBJ_COMMIT) type_str = "commit";
-    else return -1;
+    char header[64];
+    int header_len = snprintf(header, sizeof(header), "%s %zu", type_str, len);
+    // header_len does NOT include the null terminator, but we want it in the object
+    size_t full_len = (size_t)header_len + 1 + len; // header + '\0' + data
 
-    int header_len = sprintf(header, "%s %zu", type_str, len) + 1;
+    // 2. Build the full object in memory (header + '\0' + data)
+    uint8_t *full = malloc(full_len);
+    if (!full) return -1;
+    memcpy(full, header, header_len);
+    full[header_len] = '\0';
+    memcpy(full + header_len + 1, data, len);
 
-    size_t total_size = header_len + len;
-    unsigned char *buffer = malloc(total_size);
-    if (!buffer) return -1;
+    // 3. Compute SHA-256 of the full object
+    ObjectID id;
+    compute_hash(full, full_len, &id);
 
-    memcpy(buffer, header, header_len);
-    memcpy(buffer + header_len, data, len);
-
-    // Compute hash using PROVIDED function
-    compute_hash(buffer, total_size, id_out);
-
-    // Deduplication
-    if (object_exists(id_out)) {
-        free(buffer);
+    // 4. Deduplication — if it already exists, we're done
+    if (object_exists(&id)) {
+        *id_out = id;
+        free(full);
         return 0;
     }
 
-    // Get correct path using PROVIDED function
-    char path[512];
-    object_path(id_out, path, sizeof(path));
+    // 5. Create the shard directory (.pes/objects/XX/)
+    char hex[HASH_HEX_SIZE + 1];
+    hash_to_hex(&id, hex);
 
-    // Create directory path
-    char dir[512];
-    strncpy(dir, path, sizeof(dir));
-    dir[sizeof(dir)-1] = '\0';
+    char shard_dir[256];
+    snprintf(shard_dir, sizeof(shard_dir), "%s/%.2s", OBJECTS_DIR, hex);
+    mkdir(shard_dir, 0755); // OK if it already exists
 
-    char *slash = strrchr(dir, '/');
-    if (!slash) {
-        free(buffer);
-        return -1;
-    }
-    *slash = '\0';
+    // 6. Write to a temp file in the same shard directory
+    char final_path[512];
+    object_path(&id, final_path, sizeof(final_path));
 
-    // Create required directories
-    mkdir(".pes", 0755);
-    mkdir(OBJECTS_DIR, 0755);
-    mkdir(dir, 0755);
+    char tmp_path[520];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", final_path);
 
-    // Temp file path
-    char temp_path[512];
-    snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
-
-    int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    int fd = open(tmp_path, O_CREAT | O_WRONLY | O_TRUNC, 0444);
+    int fd = open(tmp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (fd < 0) {
-        free(buffer);
+        free(full);
         return -1;
     }
 
-    ssize_t written = write(fd, buffer, total_size);
-    if (written != total_size) {
-        close(fd);
-        free(buffer);
-        return -1;
+    // Write all bytes
+    size_t written = 0;
+    while (written < full_len) {
+        ssize_t n = write(fd, (uint8_t *)full + written, full_len - written);
+        if (n <= 0) {
+            close(fd);
+            unlink(tmp_path);
+            free(full);
+            return -1;
+        }
+        written += n;
     }
 
+    // 7. fsync the temp file to ensure data is on disk
     fsync(fd);
     close(fd);
+    free(full);
 
-    if (rename(temp_path, path) != 0) {
-        free(buffer);
+    // 8. Atomically rename temp → final
+    if (rename(tmp_path, final_path) != 0) {
+        unlink(tmp_path);
         return -1;
     }
 
-    free(buffer);
+    // 9. fsync the shard directory to persist the rename
+    int dir_fd = open(shard_dir, O_RDONLY);
+    if (dir_fd >= 0) {
+        fsync(dir_fd);
+        close(dir_fd);
+    }
+
+    // 10. Return the computed hash
+    *id_out = id;
     return 0;
 }
+
 // Read an object from the store.
 //
 // Steps:
