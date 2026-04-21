@@ -105,56 +105,65 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 
     size_t total_size = header_len + len;
     char *buffer = malloc(total_size);
+    if (!buffer) return -1;
 
     memcpy(buffer, header, header_len);
     memcpy(buffer + header_len, data, len);
 
+    // Compute hash
     compute_hash(buffer, total_size, id_out);
 
+    // Dedup
     if (object_exists(id_out)) {
         free(buffer);
         return 0;
     }
 
-    char path[512];
-    object_path(id_out, path, sizeof(path));
+    // Convert hash to hex
+    char hex[HASH_HEX_SIZE + 1];
+    hash_to_hex(id_out, hex);
 
-    char dir[512];
-    strncpy(dir, path, sizeof(dir));
-    dir[sizeof(dir)-1] = '\0';
-    
-    char *slash = strrchr(dir, '/');
-    if (slash) *slash = '\0';
-    
+    // Create directories properly
     mkdir(".pes", 0755);
-    mkdir(OBJECTS_DIR, 0755);
-    mkdir(dir, 0755);
+    mkdir(".pes/objects", 0755);
 
+    char shard_dir[512];
+    snprintf(shard_dir, sizeof(shard_dir), ".pes/objects/%.2s", hex);
+    mkdir(shard_dir, 0755);
+
+    // Final path
+    char final_path[512];
+    snprintf(final_path, sizeof(final_path), "%s/%s", shard_dir, hex + 2);
+
+    // Temp path
     char temp_path[512];
-    snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", final_path);
 
-  int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-if (fd < 0) {
-    perror("open failed");
-    free(buffer);
-    return -1;
-}
+    // Write file
+    int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) {
+        perror("open");
+        free(buffer);
+        return -1;
+    }
 
     ssize_t written = write(fd, buffer, total_size);
-if (written != total_size) {
-    perror("write failed");
-    close(fd);
-    free(buffer);
-    return -1;
-}
+    if (written != total_size) {
+        perror("write");
+        close(fd);
+        free(buffer);
+        return -1;
+    }
+
     fsync(fd);
     close(fd);
 
-  if (rename(temp_path, path) != 0) {
-    perror("rename failed");
-    free(buffer);
-    return -1;
-}
+    // Atomic rename
+    if (rename(temp_path, final_path) != 0) {
+        perror("rename");
+        free(buffer);
+        return -1;
+    }
 
     free(buffer);
     return 0;
