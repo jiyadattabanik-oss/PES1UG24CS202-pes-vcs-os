@@ -124,51 +124,59 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
     hash_to_hex(id_out, hex);
 
     // Create directories properly
-    mkdir(".pes", 0755);
-    mkdir(".pes/objects", 0755);
+   char path[512];
+object_path(id_out, path, sizeof(path));
 
-    char shard_dir[512];
-    snprintf(shard_dir, sizeof(shard_dir), ".pes/objects/%.2s", hex);
-    mkdir(shard_dir, 0755);
+// Extract directory (remove filename)
+char dir[512];
+strncpy(dir, path, sizeof(dir));
+dir[sizeof(dir)-1] = '\0';
 
-    // Final path
-    char final_path[512];
-    snprintf(final_path, sizeof(final_path), "%s/%s", shard_dir, hex + 2);
-
-    // Temp path
-    char temp_path[512];
-    snprintf(temp_path, sizeof(temp_path), "%s.tmp", final_path);
-
-    // Write file
-    int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-    if (fd < 0) {
-        perror("open");
-        free(buffer);
-        return -1;
-    }
-
-    ssize_t written = write(fd, buffer, total_size);
-    if (written != total_size) {
-        perror("write");
-        close(fd);
-        free(buffer);
-        return -1;
-    }
-
-    fsync(fd);
-    close(fd);
-
-    // Atomic rename
-    if (rename(temp_path, final_path) != 0) {
-        perror("rename");
-        free(buffer);
-        return -1;
-    }
-
+char *slash = strrchr(dir, '/');
+if (!slash) {
     free(buffer);
-    return 0;
+    return -1;
+}
+*slash = '\0';
+
+// Create directories
+mkdir(".pes", 0755);
+mkdir(OBJECTS_DIR, 0755);
+mkdir(dir, 0755);
+
+// Temp file
+char temp_path[512];
+snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+
+// Write
+int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+if (fd < 0) {
+    perror("open");
+    free(buffer);
+    return -1;
 }
 
+ssize_t written = write(fd, buffer, total_size);
+if (written != total_size) {
+    perror("write");
+    close(fd);
+    free(buffer);
+    return -1;
+}
+
+fsync(fd);
+close(fd);
+
+// Rename
+if (rename(temp_path, path) != 0) {
+    perror("rename");
+    free(buffer);
+    return -1;
+}
+
+free(buffer);
+return 0;
+}
 // Read an object from the store.
 //
 // Steps:
