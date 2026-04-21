@@ -94,6 +94,7 @@ int object_exists(const ObjectID *id) {
 //
 // Returns 0 on success, -1 on error.
 int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out) {
+    printf("object_write called\n");
     char header[64];
     const char *type_str;
 
