@@ -99,83 +99,75 @@ int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out
 
     if (type == OBJ_BLOB) type_str = "blob";
     else if (type == OBJ_TREE) type_str = "tree";
-    else type_str = "commit";
+    else if (type == OBJ_COMMIT) type_str = "commit";
+    else return -1;
 
     int header_len = sprintf(header, "%s %zu", type_str, len) + 1;
 
     size_t total_size = header_len + len;
-    char *buffer = malloc(total_size);
+    unsigned char *buffer = malloc(total_size);
     if (!buffer) return -1;
 
     memcpy(buffer, header, header_len);
     memcpy(buffer + header_len, data, len);
 
-    // Compute hash
+    // Compute hash using PROVIDED function
     compute_hash(buffer, total_size, id_out);
 
-    // Dedup
+    // Deduplication
     if (object_exists(id_out)) {
         free(buffer);
         return 0;
     }
 
-    // Convert hash to hex
-    char hex[HASH_HEX_SIZE + 1];
-    hash_to_hex(id_out, hex);
+    // Get correct path using PROVIDED function
+    char path[512];
+    object_path(id_out, path, sizeof(path));
 
-    // Create directories properly
-   char path[512];
-object_path(id_out, path, sizeof(path));
+    // Create directory path
+    char dir[512];
+    strncpy(dir, path, sizeof(dir));
+    dir[sizeof(dir)-1] = '\0';
 
-// Extract directory (remove filename)
-char dir[512];
-strncpy(dir, path, sizeof(dir));
-dir[sizeof(dir)-1] = '\0';
+    char *slash = strrchr(dir, '/');
+    if (!slash) {
+        free(buffer);
+        return -1;
+    }
+    *slash = '\0';
 
-char *slash = strrchr(dir, '/');
-if (!slash) {
-    free(buffer);
-    return -1;
-}
-*slash = '\0';
+    // Create required directories
+    mkdir(".pes", 0755);
+    mkdir(OBJECTS_DIR, 0755);
+    mkdir(dir, 0755);
 
-// Create directories
-mkdir(".pes", 0755);
-mkdir(OBJECTS_DIR, 0755);
-mkdir(dir, 0755);
+    // Temp file path
+    char temp_path[512];
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
 
-// Temp file
-char temp_path[512];
-snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+    int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) {
+        free(buffer);
+        return -1;
+    }
 
-// Write
-int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-if (fd < 0) {
-    perror("open");
-    free(buffer);
-    return -1;
-}
+    ssize_t written = write(fd, buffer, total_size);
+    if (written != total_size) {
+        close(fd);
+        free(buffer);
+        return -1;
+    }
 
-ssize_t written = write(fd, buffer, total_size);
-if (written != total_size) {
-    perror("write");
+    fsync(fd);
     close(fd);
+
+    if (rename(temp_path, path) != 0) {
+        free(buffer);
+        return -1;
+    }
+
     free(buffer);
-    return -1;
-}
-
-fsync(fd);
-close(fd);
-
-// Rename
-if (rename(temp_path, path) != 0) {
-    perror("rename");
-    free(buffer);
-    return -1;
-}
-
-free(buffer);
-return 0;
+    return 0;
 }
 // Read an object from the store.
 //
