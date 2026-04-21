@@ -254,8 +254,77 @@ int index_save(const Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_add(Index *index, const char *path) {
-    // TODO: Implement file staging
-    // (See Lab Appendix for logical steps)
-    (void)index; (void)path;
-    return -1;
+    // 1. Open and read the file
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "error: cannot open '%s'\n", path);
+        return -1;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (file_size < 0) {
+        fclose(f);
+        return -1;
+    }
+
+    void *contents = malloc((size_t)file_size + 1);
+    if (!contents) {
+        fclose(f);
+        return -1;
+    }
+
+    size_t nread = fread(contents, 1, (size_t)file_size, f);
+    fclose(f);
+
+    if (nread != (size_t)file_size) {
+        free(contents);
+        return -1;
+    }
+
+    // 2. Write the file contents as a blob object
+    ObjectID blob_id;
+    if (object_write(OBJ_BLOB, contents, nread, &blob_id) != 0) {
+        free(contents);
+        return -1;
+    }
+    free(contents);
+
+    // 3. Stat the file for metadata (mtime, size, mode)
+    struct stat st;
+    if (lstat(path, &st) != 0) return -1;
+
+    uint32_t mode;
+    if (st.st_mode & S_IXUSR)
+        mode = 0100755;
+    else
+        mode = 0100644;
+
+    // 4. Update or insert the index entry
+    IndexEntry *existing = index_find(index, path);
+    if (existing) {
+        // Update in place
+        existing->hash     = blob_id;
+        existing->mtime_sec = (uint64_t)st.st_mtime;
+        existing->size     = (uint32_t)st.st_size;
+        existing->mode     = mode;
+    } else {
+        // New entry
+        if (index->count >= MAX_INDEX_ENTRIES) {
+            fprintf(stderr, "error: index full\n");
+            return -1;
+        }
+        IndexEntry *entry  = &index->entries[index->count++];
+        entry->hash        = blob_id;
+        entry->mtime_sec   = (uint64_t)st.st_mtime;
+        entry->size        = (uint32_t)st.st_size;
+        entry->mode        = mode;
+        strncpy(entry->path, path, sizeof(entry->path) - 1);
+        entry->path[sizeof(entry->path) - 1] = '\0';
+    }
+
+    // 5. Save the updated index atomically
+    return index_save(index);
 }
